@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 import math
 import numpy as np
@@ -39,7 +40,7 @@ class EngineConfig:
 
     # QAOA settings 
     p: int = 2
-    shots_train: int = 1024
+    shots_train: int = 2048
     shots_eval: int = 8192
     gamma_bounds: Tuple[float, float] = (0.0, 2.0 * math.pi)
     beta_bounds: Tuple[float, float] = (0.0, math.pi)
@@ -57,6 +58,11 @@ class EngineConfig:
     # Place holders for real data
     ret_mu: float = 0.0005   # mean return per scenario
     ret_sigma: float = 0.02  # std dev per scenario
+
+    # Real-data input (optional)
+    # If provided, main.py will load scenario returns from this .npz file.
+    # Expected keys: 'returns' (S,N), optional 'p_s' (S,), optional 'tickers' (N,)
+    returns_npz_path: Optional[str] = None
 
     # Full-QUBO discretization 
     Bw: int = 2       # bits per weight w_i
@@ -123,21 +129,31 @@ class PortfolioQAOAEngine:
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
 
-        # Synthetic scenario returns (replaced after real data)
-        self.returns = self.generate_synthetic_scenarios()
-        self.p_s = np.full(cfg.S, 1.0 / cfg.S, dtype=float)
-
-        # Estimated moments (replaced after real data)
-        self.mu, self.Omega = self.estimate_mu_omega(self.returns, self.p_s)
-
-        # Auto t-range for full-QUBO 
-        if cfg.auto_t_range:
-            w_eq = np.full(cfg.N, 1.0 / cfg.N)
-            losses = -self.returns @ w_eq
-            pad = 0.05 * (losses.max() - losses.min() + 1e-12)
-            self.t_min = float(losses.min() - pad)
-            self.t_max = float(losses.max() + pad)
+        # Scenario returns and probabilities.
+        # If cfg.returns_npz_path is set, load real scenarios from disk (data_prep.py output).
+        self.tickers = None
+        if cfg.returns_npz_path:
+            returns, p_s, tickers = self.load_returns_npz(cfg.returns_npz_path, expected_S=cfg.S, expected_N=cfg.N)
+            self.tickers = tickers
+            self.set_scenarios(returns, p_s)
         else:
+            self.returns = self.generate_synthetic_scenarios()
+            self.p_s = np.full(cfg.S, 1.0 / cfg.S, dtype=float)
+            self.mu, self.Omega = self.estimate_mu_omega(self.returns, self.p_s)
+
+            # Auto t-range for full-QUBO
+            if cfg.auto_t_range:
+                w_eq = np.full(cfg.N, 1.0 / cfg.N)
+                losses = -self.returns @ w_eq
+                pad = 0.05 * (losses.max() - losses.min() + 1e-12)
+                self.t_min = float(losses.min() - pad)
+                self.t_max = float(losses.max() + pad)
+            else:
+                self.t_min = cfg.t_min
+                self.t_max = cfg.t_max
+
+        # If we loaded real scenarios, set_scenarios already handled t-range; if not auto, respect config.
+        if cfg.returns_npz_path and not cfg.auto_t_range:
             self.t_min = cfg.t_min
             self.t_max = cfg.t_max
 
@@ -154,7 +170,55 @@ class PortfolioQAOAEngine:
         Omega = (p_s[:, None, None] * (centered[:, :, None] * centered[:, None, :])).sum(axis=0)
 
         Omega = 0.5 * (Omega + Omega.T)
+
         return mu, Omega
+
+    def load_returns_npz(self, path: str, expected_S: int, expected_N: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """Load scenario returns from an .npz file produced by data_prep.py."""
+        npz = np.load(Path(path), allow_pickle=True)
+        if "returns" not in npz:
+            raise KeyError(f"NPZ file {path} missing required key 'returns'")
+        returns = np.asarray(npz["returns"], dtype=float)
+        if returns.ndim != 2:
+            raise ValueError(f"'returns' must be 2D (S,N). Got shape {returns.shape}")
+        S, N = returns.shape
+        if S != expected_S or N != expected_N:
+            raise ValueError(f"returns shape mismatch. Expected (S,N)=({expected_S},{expected_N}), got ({S},{N}). "
+                             f"Regenerate scenarios with matching N and S or update EngineConfig.")
+        if "p_s" in npz:
+            p_s = np.asarray(npz["p_s"], dtype=float).reshape(-1)
+            if p_s.size != S:
+                raise ValueError(f"'p_s' must have length S={S}. Got {p_s.size}")
+            p_s = p_s / p_s.sum()
+        else:
+            p_s = np.full(S, 1.0 / S, dtype=float)
+
+        tickers = None
+        if "tickers" in npz:
+            tickers = np.asarray(npz["tickers"])
+            if tickers.size != N:
+                tickers = None
+
+        return returns, p_s, tickers
+
+    def set_scenarios(self, returns: np.ndarray, p_s: Optional[np.ndarray] = None) -> None:
+        """Replace scenarios and recompute moments (mu, Omega) and t-range if configured."""
+        self.returns = np.asarray(returns, dtype=float)
+        if p_s is None:
+            self.p_s = np.full(self.returns.shape[0], 1.0 / self.returns.shape[0], dtype=float)
+        else:
+            p_s = np.asarray(p_s, dtype=float).reshape(-1)
+            self.p_s = p_s / p_s.sum()
+
+        self.mu, self.Omega = self.estimate_mu_omega(self.returns, self.p_s)
+
+        # Update t-range bounds for full-QUBO encoding if requested
+        if self.cfg.auto_t_range:
+            w_eq = np.full(self.cfg.N, 1.0 / self.cfg.N)
+            losses = -self.returns @ w_eq
+            pad = 0.05 * (losses.max() - losses.min() + 1e-12)
+            self.t_min = float(losses.min() - pad)
+            self.t_max = float(losses.max() + pad)
 
 
     def build_selector_qubo(self) -> Tuple[np.ndarray, float]:
@@ -460,8 +524,13 @@ class PortfolioQAOAEngine:
         return SparsePauliOp.from_list(paulis)
 
 
-    @staticmethod
-    def build_qaoa_circuit_from_ising(n_qubits: int, h: np.ndarray, J: Dict[Tuple[int, int], float], p: int) -> Tuple[QuantumCircuit, ParameterVector, ParameterVector]:
+    def build_qaoa_circuit_from_ising(
+        self,
+        n_qubits: int,
+        h: np.ndarray,
+        J: Dict[Tuple[int, int], float],
+        p: int,
+    ) -> Tuple[QuantumCircuit, ParameterVector, ParameterVector]:
         gammas = ParameterVector("gamma", p)
         betas = ParameterVector("beta", p)
 
@@ -469,6 +538,7 @@ class PortfolioQAOAEngine:
         qc.h(range(n_qubits))
 
         for l in range(p):
+            # Cost: exp(-i gamma_l H_C) with H_C = sum_i h_i Z_i + sum_{i<j} J_ij Z_i Z_j
             for i in range(n_qubits):
                 hi = float(h[i])
                 if abs(hi) > 1e-15:
@@ -478,10 +548,11 @@ class PortfolioQAOAEngine:
                 if abs(Jij) > 1e-15:
                     qc.rzz(2.0 * float(Jij) * gammas[l], i, j)
 
+            # Mixer: exp(-i beta_l sum_i X_i)
             for i in range(n_qubits):
                 qc.rx(2.0 * betas[l], i)
-        
-        if cfg.DRAW_CIRCUIT:
+
+        if self.cfg.DRAW_CIRCUIT:
             print(qc.draw(output="text"))
 
         qc.measure_all()
@@ -858,113 +929,115 @@ class PortfolioQAOAEngine:
 
 
 if __name__ == "__main__":
-    cfg = EngineConfig(
-        N=15,
-        S=4,
-        k=7,
-        alpha=0.95,
-        C=0.03,
-        lambda_K=8.0,
-        beta_return=1.0,
-        gamma_risk=1.0,
-        spsa_iters=10,  
-        seed=13,
-        DRAW_CIRCUIT=False
-    )
-
-    engine = PortfolioQAOAEngine(cfg)
-    results = engine.run_hybrid_selector()
-    
-
-    best = results["best_portfolio"]
-    print("=== HYBRID SELECTOR RESULTS ===")
-    print("Best QAOA params (gamma_1..gamma_p, beta_1..beta_p):")
-    print(results["best_params"])
-
-    if best is None:
-        print("No CVaR-feasible portfolio found among sampled exact-k subsets.")
-    else:
-        print("\nSelected subset indices:", best["subset_idx"].tolist())
-        print("Subset bitstring x:", best["subset_bits"].astype(int).tolist())
-        print("Classical weights on subset:", np.round(best["weights"], 6).tolist())
-        print("Expected return:", best["expected_return"])
-        print("Empirical CVaR:", best["empirical_cvar"])
-        print("Selector energy:", best["selector_energy_scaled"])
-        print("Sample count:", best["count"])
-        
-        
     # cfg = EngineConfig(
-    #     N=5,
-    #     S=4,
-    #     k=2,
+    #     N=16,
+    #     S=5,
+    #     k=7,
     #     alpha=0.95,
     #     C=0.03,
     #     lambda_K=8.0,
     #     beta_return=1.0,
     #     gamma_risk=1.0,
-    #     # Full QUBO bit
-    #     Bw=5,
-    #     Bt=1,
-    #     Bv=1,
-    #     Bxi=1,
-    #     Beta=1,   
-    #     spsa_iters=10,
-    #     shots_train=128,
-    #     shots_eval=512,
-    #     seed=7,
-    #     DRAW_CIRCUIT=False
+    #     spsa_iters=10,  
+    #     seed=13,
+    #     DRAW_CIRCUIT=False,
+    #     returns_npz_path="../data/scenario_1.npz"
     # )
 
     # engine = PortfolioQAOAEngine(cfg)
-    # results = engine.run_full_penalized()
+    # results = engine.run_hybrid_selector()
+    
 
-    # print("\n\n=== FULL-PENALIZED QAOA RESULTS ===")
+    # best = results["best_portfolio"]
+    # print("=== HYBRID SELECTOR RESULTS ===")
     # print("Best QAOA params (gamma_1..gamma_p, beta_1..beta_p):")
     # print(results["best_params"])
-    # print("Number of qubits:", results["n_qubits"])
 
-    # best = results["best_sample"]
-    # decoded = results["decoded"]
-
-    # if best is None or decoded is None:
-    #     print("No sampled solution returned.")
+    # if best is None:
+    #     print("No CVaR-feasible portfolio found among sampled exact-k subsets.")
     # else:
-    #     print("\nBest sampled energy (scaled):", best["energy_scaled"])
-    #     print("Best sampled energy (internal):", best["energy_internal"])
+    #     print("\nSelected subset indices:", best["subset_idx"].tolist())
+    #     print("Subset bitstring x:", best["subset_bits"].astype(int).tolist())
+    #     print("Classical weights on subset:", np.round(best["weights"], 6).tolist())
+    #     print("Expected return:", best["expected_return"])
+    #     print("Empirical CVaR:", best["empirical_cvar"])
+    #     print("Selector energy:", best["selector_energy_scaled"])
     #     print("Sample count:", best["count"])
+        
+        
+    cfg = EngineConfig(
+        N=5,
+        S=4,
+        k=2,
+        alpha=0.95,
+        C=0.03,
+        lambda_K=8.0,
+        beta_return=1.0,
+        gamma_risk=1.0,
+        # Full QUBO bit
+        Bw=5,
+        Bt=1,
+        Bv=1,
+        Bxi=1,
+        Beta=1,   
+        spsa_iters=10,
+        shots_train=512,
+        shots_eval=1024,
+        seed=7,
+        DRAW_CIRCUIT=False,
+        returns_npz_path="../data/scenario_2.npz"
+    )
 
-    #     print("\nDecoded variables:")
-    #     print("Subset bitstring x:", decoded["x"].astype(int).tolist())
-    #     print("Quantum weights on subset:", np.round(decoded["w"], 6).tolist())
-    #     print("t:", round(decoded["t"], 6))
-    #     print("v:", np.round(decoded["v"], 6).tolist())
-    #     print("xi:", round(decoded["xi"], 6))
-    #     print("eta:", np.round(decoded["eta"], 6).tolist())
-    #     print("sum_x:", decoded["sum_x"])
-    #     print("sum_w:", round(decoded["sum_w"], 6))
+    engine = PortfolioQAOAEngine(cfg)
+    results = engine.run_full_penalized()
+
+    print("\n\n=== FULL-PENALIZED QAOA RESULTS ===")
+    print("Best QAOA params (gamma_1..gamma_p, beta_1..beta_p):")
+    print(results["best_params"])
+    print("Number of qubits:", results["n_qubits"])
+
+    best = results["best_sample"]
+    decoded = results["decoded"]
+
+    if best is None or decoded is None:
+        print("No sampled solution returned.")
+    else:
+        print("\nBest sampled energy (scaled):", best["energy_scaled"])
+        print("Best sampled energy (internal):", best["energy_internal"])
+        print("Sample count:", best["count"])
+
+        print("\nDecoded variables:")
+        print("Subset bitstring x:", decoded["x"].astype(int).tolist())
+        print("Quantum weights on subset:", np.round(decoded["w"], 6).tolist())
+        print("t:", round(decoded["t"], 6))
+        print("v:", np.round(decoded["v"], 6).tolist())
+        print("xi:", round(decoded["xi"], 6))
+        print("eta:", np.round(decoded["eta"], 6).tolist())
+        print("sum_x:", decoded["sum_x"])
+        print("sum_w:", round(decoded["sum_w"], 6))
 
 
-    #     x = decoded["x"].astype(float)
-    #     w = decoded["w"].astype(float)
-    #     t = float(decoded["t"])
-    #     v = decoded["v"].astype(float)
-    #     xi = float(decoded["xi"])
-    #     eta = decoded["eta"].astype(float)
+        x = decoded["x"].astype(float)
+        w = decoded["w"].astype(float)
+        t = float(decoded["t"])
+        v = decoded["v"].astype(float)
+        xi = float(decoded["xi"])
+        eta = decoded["eta"].astype(float)
 
-    #     r = engine.returns            
-    #     p_s = engine.p_s             
-    #     alpha = cfg.alpha
-
-
-    #     budget_residual = float(np.sum(w) - 1.0)
-    #     cardinality_residual = float(np.sum(x) - cfg.k)
-    #     cvar_budget_residual = float(t + (1.0 / (1.0 - alpha)) * np.dot(p_s, v) + xi - cfg.C)
+        r = engine.returns            
+        p_s = engine.p_s             
+        alpha = cfg.alpha
 
 
-    #     tail_residuals = v + (r @ w) + t - eta
+        budget_residual = float(np.sum(w) - 1.0)
+        cardinality_residual = float(np.sum(x) - cfg.k)
+        cvar_budget_residual = float(t + (1.0 / (1.0 - alpha)) * np.dot(p_s, v) + xi - cfg.C)
 
-    #     print("\nPenalty residual checks:")
-    #     print("Budget residual (sum(w)-1):", round(budget_residual, 6))
-    #     print("Cardinality residual (sum(x)-k):", round(cardinality_residual, 6))
-    #     print("CVaR budget residual:", round(cvar_budget_residual, 6))
-    #     print("Tail residuals:", np.round(tail_residuals, 6).tolist())
+
+        tail_residuals = v + (r @ w) + t - eta
+
+        print("\nPenalty residual checks:")
+        print("Budget residual (sum(w)-1):", round(budget_residual, 6))
+        print("Cardinality residual (sum(x)-k):", round(cardinality_residual, 6))
+        print("CVaR budget residual:", round(cvar_budget_residual, 6))
+        print("Tail residuals:", np.round(tail_residuals, 6).tolist())

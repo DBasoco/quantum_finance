@@ -40,7 +40,7 @@ class EngineConfig:
 
     # QAOA settings 
     p: int = 2
-    shots_train: int = 2048
+    shots_train: int = 1024
     shots_eval: int = 8192
     gamma_bounds: Tuple[float, float] = (0.0, 2.0 * math.pi)
     beta_bounds: Tuple[float, float] = (0.0, math.pi)
@@ -53,6 +53,9 @@ class EngineConfig:
     spsa_alpha: float = 0.602
     spsa_gamma: float = 0.101
 
+
+    # Evaluate objective at the updated theta every this many SPSA iterations (reduces sampler calls)
+    spsa_eval_every: int = 5
     # Synthetic data parameters
     seed: int = 125
     # Place holders for real data
@@ -60,7 +63,7 @@ class EngineConfig:
     ret_sigma: float = 0.02  # std dev per scenario
 
     # Real-data input (optional)
-    # If provided, main.py will load scenario returns from this .npz file.
+    # If provided, load scenario returns from this .npz file (data_prep.py output).
     # Expected keys: 'returns' (S,N), optional 'p_s' (S,), optional 'tickers' (N,)
     returns_npz_path: Optional[str] = None
 
@@ -129,6 +132,9 @@ class PortfolioQAOAEngine:
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
 
+        # Reuse a single SamplerV2 instance to avoid per-call initialization overhead.
+        self.sampler = AerSamplerV2(seed=self.cfg.seed)
+
         # Scenario returns and probabilities.
         # If cfg.returns_npz_path is set, load real scenarios from disk (data_prep.py output).
         self.tickers = None
@@ -137,6 +143,7 @@ class PortfolioQAOAEngine:
             self.tickers = tickers
             self.set_scenarios(returns, p_s)
         else:
+            # Synthetic placeholder scenarios
             self.returns = self.generate_synthetic_scenarios()
             self.p_s = np.full(cfg.S, 1.0 / cfg.S, dtype=float)
             self.mu, self.Omega = self.estimate_mu_omega(self.returns, self.p_s)
@@ -170,8 +177,9 @@ class PortfolioQAOAEngine:
         Omega = (p_s[:, None, None] * (centered[:, :, None] * centered[:, None, :])).sum(axis=0)
 
         Omega = 0.5 * (Omega + Omega.T)
-
         return mu, Omega
+
+
 
     def load_returns_npz(self, path: str, expected_S: int, expected_N: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Load scenario returns from an .npz file produced by data_prep.py."""
@@ -183,8 +191,11 @@ class PortfolioQAOAEngine:
             raise ValueError(f"'returns' must be 2D (S,N). Got shape {returns.shape}")
         S, N = returns.shape
         if S != expected_S or N != expected_N:
-            raise ValueError(f"returns shape mismatch. Expected (S,N)=({expected_S},{expected_N}), got ({S},{N}). "
-                             f"Regenerate scenarios with matching N and S or update EngineConfig.")
+            raise ValueError(
+                f"returns shape mismatch. Expected (S,N)=({expected_S},{expected_N}), got ({S},{N}). "
+                f"Regenerate scenarios with matching N and S or update EngineConfig."
+            )
+
         if "p_s" in npz:
             p_s = np.asarray(npz["p_s"], dtype=float).reshape(-1)
             if p_s.size != S:
@@ -212,14 +223,12 @@ class PortfolioQAOAEngine:
 
         self.mu, self.Omega = self.estimate_mu_omega(self.returns, self.p_s)
 
-        # Update t-range bounds for full-QUBO encoding if requested
         if self.cfg.auto_t_range:
             w_eq = np.full(self.cfg.N, 1.0 / self.cfg.N)
             losses = -self.returns @ w_eq
             pad = 0.05 * (losses.max() - losses.min() + 1e-12)
             self.t_min = float(losses.min() - pad)
             self.t_max = float(losses.max() + pad)
-
 
     def build_selector_qubo(self) -> Tuple[np.ndarray, float]:
         cfg = self.cfg
@@ -524,13 +533,8 @@ class PortfolioQAOAEngine:
         return SparsePauliOp.from_list(paulis)
 
 
-    def build_qaoa_circuit_from_ising(
-        self,
-        n_qubits: int,
-        h: np.ndarray,
-        J: Dict[Tuple[int, int], float],
-        p: int,
-    ) -> Tuple[QuantumCircuit, ParameterVector, ParameterVector]:
+    @staticmethod
+    def build_qaoa_circuit_from_ising(n_qubits: int, h: np.ndarray, J: Dict[Tuple[int, int], float], p: int) -> Tuple[QuantumCircuit, ParameterVector, ParameterVector]:
         gammas = ParameterVector("gamma", p)
         betas = ParameterVector("beta", p)
 
@@ -538,7 +542,6 @@ class PortfolioQAOAEngine:
         qc.h(range(n_qubits))
 
         for l in range(p):
-            # Cost: exp(-i gamma_l H_C) with H_C = sum_i h_i Z_i + sum_{i<j} J_ij Z_i Z_j
             for i in range(n_qubits):
                 hi = float(h[i])
                 if abs(hi) > 1e-15:
@@ -548,18 +551,14 @@ class PortfolioQAOAEngine:
                 if abs(Jij) > 1e-15:
                     qc.rzz(2.0 * float(Jij) * gammas[l], i, j)
 
-            # Mixer: exp(-i beta_l sum_i X_i)
             for i in range(n_qubits):
                 qc.rx(2.0 * betas[l], i)
-
-        if self.cfg.DRAW_CIRCUIT:
-            print(qc.draw(output="text"))
-
         qc.measure_all()
         return qc, gammas, betas
 
-    def get_sampler(self, shots: int) -> AerSamplerV2:
-        return AerSamplerV2(default_shots=shots, seed=self.cfg.seed)
+    def get_sampler(self) -> AerSamplerV2:
+        """Return the cached SamplerV2 instance (simulation)."""
+        return self.sampler
 
     @staticmethod
     def int_to_bits(x: int, n: int) -> np.ndarray:
@@ -581,8 +580,42 @@ class PortfolioQAOAEngine:
                     E += float(row[j] * zi * z[j])
         return E
 
+
+    @staticmethod
+    def precompute_qubo_terms(Q_upper: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Precompute (diag, iu, ju, vals) for faster energy evaluation from bitstrings.
+
+        Stores only nonzero upper-triangle off-diagonal terms. This avoids O(n^2) python loops
+        inside tight SPSA evaluation loops.
+        """
+        diag = np.diag(Q_upper).astype(float).copy()
+        iu, ju = np.triu_indices_from(Q_upper, k=1)
+        vals = Q_upper[iu, ju].astype(float)
+        mask = np.abs(vals) > 1e-15
+        return diag, iu[mask], ju[mask], vals[mask]
+
+    @staticmethod
+    def energy_from_qubo_terms(
+        diag: np.ndarray,
+        iu: np.ndarray,
+        ju: np.ndarray,
+        vals: np.ndarray,
+        kappa: float,
+        z_bits: np.ndarray,
+    ) -> float:
+        """Compute QUBO energy using precomputed term lists.
+
+        E = kappa + sum_i diag[i]*z_i + sum_{i<j} vals[t]*z_{iu[t]}*z_{ju[t]}.
+        """
+        zb = z_bits.astype(np.int8, copy=False)
+        e = float(kappa + np.dot(diag, zb.astype(float)))
+        if vals.size:
+            # bitwise AND is valid because bits are 0/1
+            e += float(np.dot(vals, (zb[iu] & zb[ju]).astype(float)))
+        return e
+
     def sample_bitstrings(self, circuit: QuantumCircuit, gammas: ParameterVector, betas: ParameterVector, params: np.ndarray, shots: int) -> Dict[int, int]:
-        sampler = self.get_sampler(shots=shots)
+        sampler = self.get_sampler()
 
         p = self.cfg.p
         gamma_vals = params[:p].tolist()
@@ -656,11 +689,14 @@ class PortfolioQAOAEngine:
             # Update
             theta = project(theta - ak * ghat)
 
-            # Track
-            f_curr = float(objective_fn(theta, shots))
-            hist.append(f_curr)
+            # Track (avoid a third sampler call every iteration)
+            if (k % cfg.spsa_eval_every) == 0:
+                f_curr = float(objective_fn(theta, shots))
+            else:
+                f_curr = 0.5 * (f_plus + f_minus)
+            hist.append(float(f_curr))
             if f_curr < best_val:
-                best_val = f_curr
+                best_val = float(f_curr)
                 best_theta = theta.copy()
 
         return best_theta, hist
@@ -731,15 +767,18 @@ class PortfolioQAOAEngine:
 
         qc, gammas, betas = self.build_qaoa_circuit_from_ising(n, h, J, cfg.p)
 
+        diag, iu, ju, vals = self.precompute_qubo_terms(Qs)
+
         def objective(theta: np.ndarray, shots: int) -> float:
             counts = self.sample_bitstrings(qc, gammas, betas, theta, shots=shots)
-
-            energies: List[float] = []
+            num = 0.0
+            den = 0
             for outcome, c in counts.items():
-                z = self.int_to_bits(outcome, n)
-                e = self.energy_from_qubo(Qs, kappas, z)
-                energies.extend([e] * c)
-            return float(np.mean(energies)) if energies else float("inf")
+                z = self.int_to_bits(int(outcome), n)
+                e = self.energy_from_qubo_terms(diag, iu, ju, vals, kappas, z)
+                num += float(c) * e
+                den += int(c)
+            return (num / den) if den else float("inf")
 
         best_theta, hist = self.spsa_optimize_params(objective_fn=objective, dim=2 * cfg.p, iters=cfg.spsa_iters, shots=cfg.shots_train, init=None)
 
@@ -752,7 +791,7 @@ class PortfolioQAOAEngine:
             outcome_int = int(outcome)
             x_bits = self.int_to_bits(outcome_int, n)
             card = int(x_bits.sum())
-            e = self.energy_from_qubo(Qs, kappas, x_bits)
+            e = self.energy_from_qubo_terms(diag, iu, ju, vals, kappas, x_bits)
             candidates.append((outcome_int, x_bits, int(c), float(e)))
 
         def key(item):
@@ -880,14 +919,18 @@ class PortfolioQAOAEngine:
 
         qc, gammas, betas = self.build_qaoa_circuit_from_ising(n, h, J, cfg.p)
 
+        diag, iu, ju, vals = self.precompute_qubo_terms(Qs)
+
         def objective(theta: np.ndarray, shots: int) -> float:
             counts = self.sample_bitstrings(qc, gammas, betas, theta, shots=shots)
-            energies: List[float] = []
+            num = 0.0
+            den = 0
             for outcome, c in counts.items():
-                z = self.int_to_bits(outcome, n)
-                e = self.energy_from_qubo(Qs, kappas, z)
-                energies.extend([e] * c)
-            return float(np.mean(energies)) if energies else float("inf")
+                z = self.int_to_bits(int(outcome), n)
+                e = self.energy_from_qubo_terms(diag, iu, ju, vals, kappas, z)
+                num += float(c) * e
+                den += int(c)
+            return (num / den) if den else float("inf")
 
         best_theta, hist = self.spsa_optimize_params(objective_fn=objective, dim=2 * cfg.p, iters=cfg.spsa_iters, shots=cfg.shots_train, init=None)
 
@@ -897,7 +940,7 @@ class PortfolioQAOAEngine:
         best = None
         for outcome, c in counts_eval.items():
             z = self.int_to_bits(outcome, n)
-            e = self.energy_from_qubo(Qs, kappas, z)
+            e = self.energy_from_qubo_terms(diag, iu, ju, vals, kappas, z)
             if (best is None) or (e < best["energy_internal"]):
                 best = {"outcome": int(outcome), "count": int(c), "energy_internal": float(e), "z": z}
 
@@ -975,14 +1018,14 @@ if __name__ == "__main__":
         beta_return=1.0,
         gamma_risk=1.0,
         # Full QUBO bit
-        Bw=5,
+        Bw=2,
         Bt=1,
         Bv=1,
         Bxi=1,
         Beta=1,   
         spsa_iters=10,
-        shots_train=512,
-        shots_eval=1024,
+        shots_train=128,
+        shots_eval=512,
         seed=7,
         DRAW_CIRCUIT=False,
         returns_npz_path="../data/scenario_2.npz"

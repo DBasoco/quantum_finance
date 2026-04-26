@@ -143,7 +143,7 @@ main.py [--db PATH] [--mode {hybrid,full}]
 | `bootstrap` | Sample S days with replacement (default) |
 | `historical` | Sample S days without replacement |
 | `rolling` | Use the most recent S trading days |
-| `block_bootstrap` | Sample contiguous blocks of days |
+| `block_bootstrap` | Sample S contiguous blocks of days (recommended to capture correlated market response)|
 | `gaussian` | Fit a multivariate normal to history and sample |
 
 **Output metrics:**
@@ -342,7 +342,7 @@ python3 main.py \
 ```bash
 python3 sweep.py \
     --db ../data/market.db \
-    --N 28 --p 2 --k-min 3 --k-max 20 \
+    --N 20 --p 2 --k-min 3 --k-max 20 \
     --seeds 20 --init-seed 420 \
     --spsa-iters 50 \
     --output-csv ../data/sweep_results.csv \

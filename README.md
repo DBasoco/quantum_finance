@@ -98,6 +98,7 @@ The core optimisation engine. Connects to the SQLite database, randomly samples 
 - Encodes all decision variables (asset selection, weights, auxiliary CVaR variables) as bits in a single large QUBO circuit.
 - Much larger qubit count; practical only for small N and S.
 - Benchmarked against both the quantum-decoded subset (with classical weights) and the full-universe classical optimum.
+- NOTE: it is extremely easy to exceed memory requirements when running the full-penalised mode
 
 **SWEEP_JSON output:**
 `main.py` prints a `SWEEP_JSON:` line at the end of each run containing structured results for parsing by `sweep.py`. Do not remove this line.
@@ -349,53 +350,6 @@ python3 sweep.py \
     --output-plot-dir ../data/plots \
     --plot
 ```
-
-### HPC cluster (SLURM)
-
-```bash
-#!/bin/bash
-#SBATCH --account=YOUR_ACCOUNT
-#SBATCH --time=2-00:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=246000
-#SBATCH --job-name=rebis_financial
-#SBATCH --output=/home/YOUR_USERNAME/node-%j.out
-#SBATCH --mail-user=your@email.edu
-#SBATCH --mail-type=BEGIN,END,FAIL
-
-. $HOME/.bashrc
-conda activate rebis
-
-cd ./quantum_finance/src/
-export MPLBACKEND=Agg
-
-python3 sweep.py \
-    --db ../data/market.db \
-    --N 28 --p 2 \
-    --k-min 3 --k-max 20 \
-    --seeds 100 --init-seed 420 \
-    --spsa-iters 50 \
-    --shots-train 2048 --shots-eval 8192 \
-    --output-csv ../data/sweep_results.csv \
-    --output-plot-dir ../data/plots \
-    --plot
-```
-
-Submit with:
-
-```bash
-sbatch quantum_finance.sh
-```
-
-Monitor with:
-
-```bash
-squeue -u YOUR_USERNAME
-tail -f ~/node-JOBID.out
-```
-
----
 
 ## Understanding the Output
 

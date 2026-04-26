@@ -488,20 +488,20 @@ All return and CVaR metrics are **in-sample** — computed on the same scenarios
 
 The 222-ticker universe spans 13 sectors with history primarily from 1990 to 2026:
 
-| Sector | Count | Representative tickers | Min history |
+| Sector | Count | All tickers | Min history |
 |---|---|---|---|
-| Financials | 32 | JPM BAC GS MS BRK-B AXP BLK CME ICE BX | ~24 yrs |
-| Health care | 23 | JNJ PFE MRK LLY UNH AMGN ISRG VRTX REGN | ~26 yrs |
-| Industrials | 22 | HON CAT DE BA LMT RTX GE MMM FDX NSC UNP | ~26 yrs |
-| Info tech | 21 | AAPL MSFT NVDA INTC MU CSCO IBM ORCL ADBE | ~14 yrs |
-| Consumer discretionary | 20 | AMZN NKE TJX SBUX ROST ORLY AZO DHI LEN | ~20 yrs |
-| Consumer staples | 17 | KO PG WMT COST MCD CL KMB GIS HSY STZ | ~26 yrs |
-| Energy | 14 | XOM CVX COP EOG HAL SLB OXY VLO LNG DVN | ~26 yrs |
-| Real estate | 13 | PLD AMT DLR PSA O SPG EQR FRT WELL | ~18 yrs |
-| Materials | 11 | NEM APD ECL SHW PPG VMC NUE IP DD MOS | ~26 yrs |
-| Utilities | 9 | NEE DUK SO AEP EXC WEC AWK AES CNP | ~26 yrs |
-| Communication services | 7 | CMCSA T VZ TMUS NFLX DIS CHTR | ~22 yrs |
-| International ADRs | 7 | TSM SAP NVO AZN GSK TM HMC SONY BIDU | ~20 yrs |
+| Financials | 36 | JPM BAC GS MS C WFC BRK-B AXP BLK SCHW BK STT NTRS PNC USB TFC COF DFS MA V CB TRV ALL PGR AON MMC MCO SPGI AMP PRU MET AFL CME ICE NDAQ BX | ~24 yrs |
+| Health care | 28 | JNJ PFE MRK ABT UNH CI CVS BAX BDX DHR TMO ISRG SYK BSX MDT ZBH GILD BIIB VRTX REGN ILMN LLY AMGN BMY ABC CAH MCK WBA | ~26 yrs |
+| Industrials | 29 | HON CAT DE BA LMT RTX GD NOC GE MMM ITW EMR ETN PH AME ROK FDX UPS NSC CSX UNP WAB GWW MSI B KTOS AIM RSG WM | ~26 yrs |
+| Info tech | 14 | AAPL MSFT NVDA INTC MU QCOM TXN AVGO CSCO IBM ORCL ADBE CRM APH | ~14 yrs |
+| Consumer discretionary | 23 | AMZN TSLA NKE TJX SBUX CMG DRI EBAY ROST ORLY AZO F GM DECK DHI LEN PHM TOL MAR LULU HD LOW YUM | ~20 yrs |
+| Consumer staples | 19 | KO PG WMT COST TGT MCD CL KMB GIS HSY MKC CPB HRL CAG MDLZ SYY STZ ADM BG | ~26 yrs |
+| Energy | 13 | XOM CVX COP EOG DVN MRO HAL SLB OXY PSX VLO LNG PED | ~26 yrs |
+| Real estate | 15 | PLD AMT DLR PSA O SPG EQR AVB FRT BXP VNO VTR WELL EXR WY | ~18 yrs |
+| Materials | 15 | NEM APD ECL SHW PPG VMC MLM NUE IP DD MOS ALB CF LYB FCX | ~26 yrs |
+| Utilities | 11 | NEE DUK SO AEP EXC WEC AWK AES PPL ES CNP | ~26 yrs |
+| Communication services | 8 | CMCSA CHTR T VZ TMUS NFLX DIS GOOGL | ~22 yrs |
+| International ADRs | 9 | TSM SAP TM HMC SONY NVO AZN GSK BIDU | ~20 yrs |
 | Commodities/ETFs | 2 | GLD SLV | ~19 yrs |
 
-**Sector balance note:** Financials is overrepresented at 32 tickers. Random draws of N=20 will disproportionately include financial names. The 112 tickers with history from 1990 ensure most draws will have aligned windows spanning multiple full market cycles including the 2000 dot-com bust, 2008 financial crisis, 2020 COVID crash, and 2022 bear market.
+**Sector balance note:** Financials is the largest sector at 36 tickers. Random draws of N assets will disproportionately include financial names. The 112 tickers with history from 1990 ensure most draws span multiple full market cycles including the 2000 dot-com bust, 2008 financial crisis, 2020 COVID crash, and 2022 bear market.

@@ -1,5 +1,3 @@
-# Initial commit
-
 # Quantum CVaR Portfolio Optimisation
 
 A quantum-classical hybrid portfolio optimisation framework using the Quantum Approximate Optimisation Algorithm (QAOA) with Conditional Value at Risk (CVaR) as the risk measure. The system selects optimal asset subsets from a market universe stored in SQLite, optimises portfolio weights using a classical LP solver, and benchmarks the quantum result against classical CVaR-optimal portfolios.
@@ -91,13 +89,14 @@ The core optimisation engine. Connects to the SQLite database, randomly samples 
 - SPSA trains the circuit parameters using CVaR-aggregated shot energies (controlled by `--train-cvar-alpha`).
 - After training, the top exact-k bitstrings are passed to a classical LP (cvxpy) which finds optimal weights for each candidate subset.
 - The subset with the highest expected return under the CVaR budget is selected.
+- Weight diversification is enforced via `--weight-floor` and `--weight-cap` to prevent the LP from concentrating into 1-3 assets.
 - Benchmarked against a classical CVaR-optimal portfolio on the full N-asset universe.
 
 **Full-penalised mode** (`--mode full`):
 - Encodes all decision variables (asset selection, weights, auxiliary CVaR variables) as bits in a single large QUBO circuit.
 - Much larger qubit count; practical only for small N and S.
 - Benchmarked against both the quantum-decoded subset (with classical weights) and the full-universe classical optimum.
-- NOTE: it is extremely easy to exceed memory requirements when running the full-penalised mode
+- NOTE: it is extremely easy to exceed memory requirements when running the full-penalised mode.
 
 **SWEEP_JSON output:**
 `main.py` prints a `SWEEP_JSON:` line at the end of each run containing structured results for parsing by `sweep.py`. Do not remove this line.
@@ -110,6 +109,7 @@ main.py [--db PATH] [--mode {hybrid,full}]
         [--p P] [--shots-train N] [--shots-eval N]
         [--spsa-iters N] [--spsa-a A] [--spsa-c C]
         [--train-cvar-alpha A]
+        [--weight-floor F] [--weight-cap C]
         [--warm-start PATH] [--save-params PATH]
         [--seed N] [--scenario METHOD] [--top-k-outcomes N]
         [--start DATE] [--end DATE]
@@ -129,10 +129,12 @@ main.py [--db PATH] [--mode {hybrid,full}]
 | `--shots-eval` | Shots for final evaluation | 16384 |
 | `--spsa-iters` | Number of SPSA optimisation iterations | 80 |
 | `--train-cvar-alpha` | CVaR level for training energy aggregation (1.0 = mean) | 0.25 |
+| `--weight-floor` | Min weight per asset as multiple of equal weight `1/k` | 0.5 |
+| `--weight-cap` | Max weight per asset as multiple of equal weight `1/k` | 2.0 |
 | `--warm-start` | Path to `.npy` file with initial QAOA parameters | None |
 | `--save-params` | Save optimised parameters to `.npy` file | None |
 | `--seed` | Random seed for asset selection and QAOA RNG | 42 |
-| `--scenario` | Scenario construction method (see below) | `bootstrap` |
+| `--scenario` | Scenario construction method (see below) | `block_bootstrap` |
 | `--top-k-outcomes` | Number of measured outcomes to print | 10 |
 | `--start` / `--end` | Date range filter for return history | None |
 
@@ -140,17 +142,22 @@ main.py [--db PATH] [--mode {hybrid,full}]
 
 | Method | Description |
 |---|---|
-| `bootstrap` | Sample S days with replacement (default) |
+| `block_bootstrap` | Sample contiguous blocks of days — **default, recommended for CVaR** |
+| `bootstrap` | Sample S days with replacement |
 | `historical` | Sample S days without replacement |
 | `rolling` | Use the most recent S trading days |
-| `block_bootstrap` | Sample S contiguous blocks of days (recommended to capture correlated market response)|
-| `gaussian` | Fit a multivariate normal to history and sample |
+| `gaussian` | Fit multivariate normal to history and sample |
+
+Block bootstrap with `--block-len 5` (one trading week) is recommended because CVaR is a tail risk measure — tail events in practice are multi-day stress events where losses are correlated across consecutive days. Plain bootstrap atomises these sequences; block bootstrap preserves them.
 
 **Output metrics:**
-- Expected return is reported as annualised percentage (`daily log-return × 25,200`)
+- Expected return is reported as daily percentage (`daily log-return × 100`)
 - Empirical CVaR is reported as daily percentage
 - Exact-k fraction: proportion of evaluation shots with exactly k assets selected
 - Return gap: classical benchmark return minus quantum return (negative = quantum won)
+
+**Weight diversification:**
+By default the LP enforces a floor of `0.5/k` and a cap of `2.0/k` per selected asset. This prevents the LP from concentrating the entire portfolio into 1-3 assets while still allowing meaningful active weighting. Both parameters are multiples of the equal-weight allocation `1/k`. Set `--weight-floor 0.0 --weight-cap 1.0` to disable diversification and use strict equal weighting, or set `--weight-floor 0.0 --weight-cap 1.0` to allow unconstrained LP optimisation.
 
 ---
 
@@ -158,9 +165,10 @@ main.py [--db PATH] [--mode {hybrid,full}]
 
 Runs `main.py` systematically across multiple random seeds and cardinality values, collecting results into a CSV and generating plots. Designed for HPC cluster execution via SLURM.
 
-**Run order for each k value:**
+**Run order:**
+For each k value from `k-min` to `k-max`:
 1. One initial run using `--init-seed` to generate a warm-start parameter file for that k.
-2. `--seeds` runs using that warm-start, each with a different random seed (and therefore a different random asset draw).
+2. `--seeds` runs using that warm-start, each with a different random seed (and therefore a different random asset draw). The effective seed passed to `main.py` is `seed * 1000 + k` to ensure different asset draws across k values for the same seed number.
 
 Each k value gets its own warm-start file (`params/params_k{k}.npy`) so parameters do not cross-contaminate between cardinality values.
 
@@ -169,7 +177,7 @@ The CSV is written after every single run so partial results are preserved if th
 **Outputs:**
 - `sweep_results.csv` — one row per `(seed, k)` run with all metrics
 - `plots/sweep_k{k}.png` — per-k four-panel plot (return, CVaR, exact-k fraction, return gap)
-- `plots/sweep_k_comparison.png` — summary plot across all k values
+- `plots/sweep_k_comparison.png` — summary plot across all k values showing mean metrics as a function of k
 
 **CLI reference:**
 
@@ -180,6 +188,7 @@ sweep.py [--db PATH] [--params-dir PATH]
          [--alpha A] [--C C]
          [--spsa-iters N] [--shots-train N] [--shots-eval N]
          [--init-seed N] [--seeds N]
+         [--scenario SCENARIO] [--block-len N]
          [--rolling] [--plot] [--python PATH]
 ```
 
@@ -195,6 +204,8 @@ sweep.py [--db PATH] [--params-dir PATH]
 | `--k-max` | Maximum cardinality to sweep (-1 = N) | -1 |
 | `--seeds` | Number of seeds per k value | 100 |
 | `--init-seed` | Seed used to generate warm-start for each k | 420 |
+| `--scenario` | Scenario construction method | `block_bootstrap` |
+| `--block-len` | Number of contiguous days per block | `5` |
 | `--rolling` | Each seed updates the params file for the next seed | False |
 | `--plot` | Generate matplotlib plots | False |
 | `--python` | Python interpreter path | `python3` |
@@ -203,85 +214,114 @@ sweep.py [--db PATH] [--params-dir PATH]
 
 ## Reproducing the Database
 
-The following command recreates the full 193-ticker universe used in this project. Run it from the `src/` directory. The full download takes approximately 10-20 minutes depending on network speed and Yahoo Finance throttling.
+The following commands recreate the full 222-ticker universe. Run from the `src/` directory. The full download takes approximately 20-30 minutes depending on network speed and Yahoo Finance throttling.
+
+**Important:** Several tickers in the universe have shorter histories that will truncate the aligned date window when randomly drawn alongside long-history tickers. The table at the end of this section lists the tickers to watch. After ingesting, verify row counts and remove any ticker with fewer than 4000 return rows before running sweeps.
 
 ```bash
-# Batch 1 — Core large-cap universe (original tickers)
+# Batch 1 — Core large-cap tech and financials
 python3 data_prep.py \
     --tickers \
-    AAPL MSFT GOOGL AMZN NVDA META INTC MU QCOM TXN AVGO \
+    AAPL MSFT GOOGL AMZN NVDA INTC MU QCOM TXN AVGO \
+    CSCO IBM ORCL ADBE \
     JPM BAC GS MS C WFC AXP BLK SCHW BRK-B \
+    --start 1990-01-01 --end 2026-04-01 \
+    --db ../data/market.db
+
+# Batch 2 — Extended financials
+python3 data_prep.py \
+    --tickers \
+    BK STT NTRS PNC USB TFC COF DFS \
+    CB TRV ALL PGR AON MMC MCO SPGI \
+    AMP PRU MET AFL \
+    CME ICE NDAQ BX \
+    --start 1990-01-01 --end 2026-04-01 \
+    --db ../data/market.db
+
+# Batch 3 — Energy
+python3 data_prep.py \
+    --tickers \
     XOM CVX COP EOG DVN MRO HAL SLB OXY PSX VLO LNG \
-    JNJ PFE MRK ABT UNH ABBV \
-    WMT TGT COST HD MCD KO PG \
-    NEE DUK SO \
-    PLD AMT \
-    V TSLA LULU CMG CHTR CMCSA \
-    FCX LYB APH B \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 2 — Industrials, defence, logistics
+# Batch 4 — Health care
 python3 data_prep.py \
     --tickers \
-    GE MMM ITW EMR HON CAT DE BA LMT RTX NOC GD \
-    FDX UPS AME ROK ETN PH \
+    JNJ PFE MRK ABT UNH CI CVS BAX BDX DHR TMO \
+    ISRG SYK BSX MDT ZBH GILD BIIB VRTX REGN ILMN \
+    LLY NVO AZN GSK AMGN \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 3 — Extended financials
+# Batch 5 — Industrials and defence
 python3 data_prep.py \
     --tickers \
-    T VZ MA PYPL \
-    TRV ALL PGR USB PNC TFC STT BK NTRS \
-    MCO SPGI AON MMC CB \
+    HON CAT DE BA LMT RTX GD NOC GE MMM \
+    ITW EMR ETN PH AME ROK FDX UPS \
+    NSC CSX UNP WAB GWW MSI \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 4 — Materials and specialty chemicals
+# Batch 6 — Consumer staples
 python3 data_prep.py \
     --tickers \
-    NEM APD NUE VMC MLM IP CF DD ECL PPG SHW FCX MOS \
+    KO PG WMT COST TGT MCD CL KMB \
+    GIS HSY MKC CPB HRL CAG MDLZ SYY STZ ADM BG \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 5 — REITs and utilities
+# Batch 7 — Consumer discretionary
 python3 data_prep.py \
     --tickers \
-    O SPG VICI EQR AVB WY EXR PSA DLR \
-    AEP EXC WEC \
+    AMZN TSLA NKE TJX SBUX CMG DRI \
+    EBAY ROST ORLY AZO F GM \
+    DECK DHI LEN PHM TOL MAR \
+    LULU \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 6 — Consumer discretionary and staples
+# Batch 8 — Materials
 python3 data_prep.py \
     --tickers \
-    YUM DRI SBUX NKE TJX LOW EBAY ROST ORLY AZO F GM \
-    CL KMB GIS HSY MKC SYY STZ MDLZ CPB HRL CAG \
-    CVS WBA CI ADM BG \
+    NEM APD ECL SHW PPG VMC MLM NUE IP DD MOS ALB CF LYB FCX \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 7 — Healthcare expansion
+# Batch 9 — REITs
 python3 data_prep.py \
     --tickers \
-    BMY LLY AMGN GILD ISRG TMO DHR BSX SYK MDT ZTS BAX BDX \
+    PLD AMT DLR PSA O SPG EQR AVB FRT BXP VNO VTR WELL EXR WY \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 8 — International ADRs and commodities
+# Batch 10 — Utilities
 python3 data_prep.py \
     --tickers \
-    BABA BIDU TSM SAP TM HMC SONY NVO AZN GSK \
+    NEE DUK SO AEP EXC WEC AWK AES PPL ES CNP \
+    --start 1990-01-01 --end 2026-04-01 \
+    --db ../data/market.db
+
+# Batch 11 — Communication services
+python3 data_prep.py \
+    --tickers \
+    CMCSA CHTR T VZ TMUS NFLX DIS \
+    --start 1990-01-01 --end 2026-04-01 \
+    --db ../data/market.db
+
+# Batch 12 — International ADRs and commodities
+python3 data_prep.py \
+    --tickers \
+    BIDU TSM SAP TM HMC SONY NVO AZN GSK \
     GLD SLV \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 
-# Batch 9 — Remaining tickers from current universe
+# Batch 13 — Remaining universe tickers
 python3 data_prep.py \
     --tickers \
-    KTOS BTU PBF LNG DVN MRO \
-    NET HIMS CVNA LULU CMG \
+    APH B KTOS LNG MRO DVN PED \
+    MA V CRM NFLX \
     --start 1990-01-01 --end 2026-04-01 \
     --db ../data/market.db
 ```
@@ -292,13 +332,43 @@ After ingesting, verify the database:
 python3 data_prep.py --db ../data/market.db --inspect
 ```
 
-Any ticker showing fewer than 1000 return rows should be reviewed and potentially removed before running sweeps.
+Check for short-history tickers that will truncate aligned windows:
 
-To remove a ticker:
+```bash
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('../data/market.db')
+rows = conn.execute(
+    'SELECT ticker, COUNT(*) as n, MIN(date) as first '
+    'FROM returns GROUP BY ticker '
+    'ORDER BY n ASC LIMIT 20'
+).fetchall()
+for r in rows:
+    flag = '  <-- REVIEW' if r[1] < 4000 else ''
+    print(f'{r[0]:8s}  {r[1]:5d} rows  from {r[2]}{flag}')
+conn.close()
+"
+```
+
+To remove a problem ticker:
 
 ```bash
 python3 data_prep.py --db ../data/market.db --delete TICKER1 TICKER2
 ```
+
+**Short-history tickers currently in the universe** — these will truncate the aligned return window when drawn alongside long-history tickers, biasing the scenario mean toward the post-2010 bull market period:
+
+| Ticker | First return | Rows | Risk |
+|---|---|---|---|
+| PSX | 2012-04-13 | ~3,511 | Truncates to 2012; skips 2008 crash entirely |
+| TSLA | 2010-06-30 | ~3,962 | High volatility; skips 2008 crash |
+| GM | 2010-11-19 | ~3,861 | Re-listed after 2009 bankruptcy |
+| CHTR | 2010-01-06 | ~4,083 | Borderline; skips 2008 |
+| LYB | 2010-04-29 | ~4,005 | Borderline; skips 2008 |
+| AVGO | 2009-08-07 | ~4,186 | Borderline; misses most of 2008 |
+| AWK | 2008-04-24 | ~4,512 | IPO'd mid-2008; mostly acceptable |
+| LULU | 2007-07-30 | ~4,698 | Acceptable but higher beta |
+| MA | 2006-05-26 | ~4,991 | Major name; acceptable for most draws |
 
 ---
 
@@ -313,21 +383,24 @@ cd quantum_finance/src
 python3 main.py \
     --db ../data/market.db \
     --mode hybrid \
-    --N 8 --S 50 --k 3 \
+    --N 20 --S 100 --k 8 \
     --p 2 --spsa-iters 80 \
+    --scenario block_bootstrap --block-len 5 \
+    --weight-floor 0.5 --weight-cap 2.0 \
     --seed 42 \
-    --save-params ../data/params/params_k3.npy
+    --save-params ../data/params/params_k8.npy
 
 # Warm-start from saved parameters
 python3 main.py \
     --db ../data/market.db \
     --mode hybrid \
-    --N 8 --S 50 --k 3 \
-    --p 10 \
-    --warm-start ../data/params/params_k3.npy \
+    --N 20 --S 100 --k 8 \
+    --p 6 \
+    --scenario block_bootstrap --block-len 5 \
+    --warm-start ../data/params/params_k8.npy \
     --seed 99
 
-# Full-penalised mode (keep N and S small)
+# Full-penalised mode (keep N and S small due to memory)
 python3 main.py \
     --db ../data/market.db \
     --mode full \
@@ -342,30 +415,79 @@ python3 main.py \
 ```bash
 python3 sweep.py \
     --db ../data/market.db \
-    --N 20 --p 2 --k-min 3 --k-max 20 \
+    --N 20 --p 2 --k-min 3 --k-max 15 \
     --seeds 20 --init-seed 420 \
     --spsa-iters 50 \
+    --scenario block_bootstrap --block-len 5 \
     --output-csv ../data/sweep_results.csv \
     --output-plot-dir ../data/plots \
     --plot
 ```
 
+### HPC cluster (SLURM)
+
+```bash
+#!/bin/bash
+#SBATCH --account=YOUR_ACCOUNT
+#SBATCH --time=2-00:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=246000
+#SBATCH --job-name=rebis_financial
+#SBATCH --output=/home/YOUR_USERNAME/node-%j.out
+#SBATCH --mail-user=your@email.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
+
+. $HOME/.bashrc
+conda activate rebis
+
+cd ./quantum_finance/src/
+export MPLBACKEND=Agg
+
+python3 sweep.py \
+    --db ../data/market.db \
+    --N 28 --p 2 \
+    --k-min 3 --k-max 20 \
+    --seeds 100 --init-seed 420 \
+    --spsa-iters 50 \
+    --shots-train 2048 --shots-eval 8192 \
+    --scenario block_bootstrap --block-len 5 \
+    --output-csv ../data/sweep_results.csv \
+    --output-plot-dir ../data/plots \
+    --plot
+```
+
+Submit with:
+
+```bash
+sbatch quantum_finance.sh
+```
+
+Monitor with:
+
+```bash
+squeue -u YOUR_USERNAME
+tail -f ~/node-JOBID.out
+```
+
+---
+
 ## Understanding the Output
 
 ### Expected return
-Reported as annualised percentage using the formula `daily log-return × 252 trading days × 100`. A value of `16.45%` means the portfolio is expected to return 16.45% per year based on the sampled scenarios. This is an **in-sample** estimate.
+Reported as daily percentage (`daily log-return × 100`). A value of `0.33%` represents the mean daily return across the sampled scenarios. This is an **in-sample** estimate computed on the same scenario sample used to optimise the circuit and fit the LP weights.
 
 ### Empirical CVaR
-The average daily loss in the worst `(1 - alpha)` fraction of scenarios. With `alpha=0.99` and `S=50`, this is the average loss in the single worst scenario. Reported as a daily percentage. The CVaR budget `C=0.03` means the optimiser targets a maximum 3% daily tail loss.
+The average daily loss in the worst `(1 - alpha)` fraction of scenarios. With `alpha=0.99` and `S=100`, this is the average loss across the single worst scenario. Reported as a daily percentage. The CVaR budget `C=0.03` means the optimiser targets a maximum 3% daily tail loss.
 
 ### Exact-k fraction
-The proportion of QAOA evaluation shots that measured a bitstring with exactly `k` assets selected. Higher is better. Values below 10% indicate the circuit is struggling to enforce the cardinality constraint and you should increase `--lambda-K` or `--p`.
+The proportion of QAOA evaluation shots that measured a bitstring with exactly `k` assets selected. Higher is better. Values below 10% indicate the circuit is struggling to enforce the cardinality constraint — increase `--lambda-K` or `--p`.
 
 ### Return gap
-Classical benchmark return minus quantum return, annualised. Negative values mean the quantum method found a higher-return portfolio than the classical baseline on the same data. Positive values mean the classical baseline won.
+Classical benchmark return minus quantum return, both in daily percentage terms. Negative values mean the quantum method found a higher-return portfolio than the classical baseline on the same data. Positive values mean the classical baseline won. A negative gap does not necessarily mean quantum advantage — it can occur because the cardinality constraint happens to act as a quality filter excluding poor-performing assets from the LP.
 
 ### Distribution table
-Shows the top measured bitstrings from the evaluation shots, ranked by QUBO energy. The `<-- SELECTED` marker indicates which bitstring was chosen after the classical LP stage. This is not always the lowest-energy bitstring because the LP selects based on expected return, not QUBO energy.
+Shows the top measured bitstrings from the evaluation shots, ranked by QUBO energy. The `<-- SELECTED` marker indicates which bitstring was chosen after the classical LP stage. This is not always the lowest-energy bitstring because the LP selects based on expected return under CVaR constraint, not QUBO energy directly.
 
 ---
 
@@ -373,41 +495,79 @@ Shows the top measured bitstrings from the evaluation shots, ranked by QUBO ener
 
 | Parameter | Effect of increasing |
 |---|---|
-| `--p` | Deeper circuit, better exact-k fraction, longer runtime |
+| `--p` | Deeper circuit, better exact-k fraction, longer runtime. Practical limit ~6 for N=28 on simulator; ~1-2 on real IBM hardware |
 | `--spsa-iters` | More optimisation, diminishing returns after ~100 |
-| `--shots-train` | Lower variance gradient estimates, slower per-iteration |
-| `--shots-eval` | Better distribution sampling, more accurate selection |
+| `--shots-train` | Lower variance gradient estimates, slower per iteration |
+| `--shots-eval` | Better distribution sampling, more accurate subset selection |
 | `--train-cvar-alpha` | Lower = focus training on best shots; 1.0 = mean energy |
 | `--lambda-K` | Stronger cardinality penalty, higher exact-k fraction |
-| `--k` | More assets selected; CVaR harder to satisfy at high k |
+| `--k` | More assets selected; CVaR harder to satisfy at high k; infeasible above ~20 with C=0.03 |
 | `--N` | Larger search space; harder for QAOA at fixed p |
 | `--C` | Looser risk budget allows higher return portfolios |
-| `--S` | More scenarios = better risk estimate, slower LP |
+| `--S` | More scenarios gives more stable mean/CVaR estimates; 100+ recommended |
+| `--weight-floor` | Higher = more forced diversification; may cause more LP infeasibility at high k |
+| `--weight-cap` | Lower = more equal weighting; reduces LP ability to tilt toward best assets |
+
+---
+
+## QAOA Circuit Depth and Hardware Feasibility
+
+QAOA performance scales with circuit depth `p`. Each additional layer adds expressibility at the cost of runtime on simulators and fidelity on real hardware.
+
+**On Aer simulator (ideal, noiseless):**
+
+| p | Approx runtime per run (N=28) | Notes |
+|---|---|---|
+| 2 | ~2 min | Current baseline |
+| 4 | ~5 min | Meaningful improvement in exact-k fraction |
+| 6 | ~10 min | Recommended for research results |
+| 10 | ~20 min | Diminishing returns |
+| 16+ | 45+ min | Rarely justified |
+
+**On real IBM quantum hardware:**
+
+Each RZZ gate decomposes to ~2 CNOT gates during transpilation. For N=28 with a dense QUBO, a single layer already produces hundreds of CNOTs. Current IBM hardware CNOT error rates of ~0.5-1% mean circuits with 500+ CNOTs produce outputs dominated by noise rather than signal.
+
+| p | Max practical N | Notes |
+|---|---|---|
+| 1 | ~10 | Clean results with error mitigation |
+| 1 | ~20 | Marginal; error mitigation required |
+| 2 | ~10 | Needs error mitigation |
+| 2+ | 28 | Not feasible on current hardware |
+
+The Aer simulation results represent what QAOA *would* achieve on ideal hardware and establish a theoretical benchmark. N=8-12 at p=1-2 represents the current hardware-feasible regime. N=28 at p=2-6 is a near-term target as hardware noise rates improve.
 
 ---
 
 ## Overfitting Warning
 
-All return and CVaR metrics reported by `main.py` are **in-sample** — computed on the same scenarios used to train the QAOA circuit and fit the LP weights. Out-of-sample performance will differ. The CVaR constraint being nearly binding (empirical CVaR ≈ C) is a sign the LP is fitting tightly to the scenario sample. Use `--start` and `--end` to hold out a test period for honest out-of-sample evaluation.
+All return and CVaR metrics are **in-sample** — computed on the same scenarios used to train the QAOA circuit and fit the LP weights. Several factors inflate in-sample results:
+
+- The LP fits weights exactly to the scenario sample; out-of-sample CVaR will typically exceed the budget.
+- With S=50 scenarios the sample mean is a noisy estimate of true expected return; use S=100 or higher.
+- Short-history tickers (PSX, TSLA, GM, CHTR) bias the aligned date window toward the 2010-2026 bull market period, inflating mean returns. Remove these from the database or use `--start 2012-01-01` to normalise the window.
+- Use `--start` and `--end` to hold out a test period for honest out-of-sample evaluation.
 
 ---
 
 ## Sector Coverage of Current Universe
 
-The 193-ticker universe spans all 11 GICS sectors:
+The 222-ticker universe spans 13 sectors with history primarily from 1990 to 2026:
 
-| Sector | Representative tickers |
-|---|---|
-| Information Technology | AAPL MSFT NVDA GOOGL META INTC MU QCOM |
-| Financials | JPM BAC GS MS BRK-B V MA AXP BLK |
-| Health Care | JNJ PFE MRK LLY UNH ABBV AMGN ISRG |
-| Industrials | HON CAT DE BA LMT RTX GE MMM FDX |
-| Consumer Staples | KO PG WMT COST MCD CL KMB GIS |
-| Energy | XOM CVX COP EOG HAL SLB OXY VLO |
-| Materials | FCX NEM APD ECL SHW PPG NUE |
-| Consumer Discretionary | AMZN TSLA NKE TJX SBUX HD LOW |
-| Real Estate | PLD AMT DLR PSA O SPG EQR |
-| Communication Services | GOOGL META CMCSA T VZ TMUS |
-| Utilities | NEE DUK SO AEP EXC WEC |
-| Commodities/ETFs | GLD SLV |
-| International ADRs | TSM SAP NVO AZN GSK BABA TM |
+| Sector | Count | Representative tickers | Min history |
+|---|---|---|---|
+| Financials | 32 | JPM BAC GS MS BRK-B AXP BLK CME ICE BX | ~24 yrs |
+| Health care | 23 | JNJ PFE MRK LLY UNH AMGN ISRG VRTX REGN | ~26 yrs |
+| Industrials | 22 | HON CAT DE BA LMT RTX GE MMM FDX NSC UNP | ~26 yrs |
+| Info tech | 21 | AAPL MSFT NVDA INTC MU CSCO IBM ORCL ADBE | ~14 yrs |
+| Consumer discretionary | 20 | AMZN NKE TJX SBUX ROST ORLY AZO DHI LEN | ~20 yrs |
+| Consumer staples | 17 | KO PG WMT COST MCD CL KMB GIS HSY STZ | ~26 yrs |
+| Energy | 14 | XOM CVX COP EOG HAL SLB OXY VLO LNG DVN | ~26 yrs |
+| Real estate | 13 | PLD AMT DLR PSA O SPG EQR FRT WELL | ~18 yrs |
+| Materials | 11 | NEM APD ECL SHW PPG VMC NUE IP DD MOS | ~26 yrs |
+| Utilities | 9 | NEE DUK SO AEP EXC WEC AWK AES CNP | ~26 yrs |
+| Communication services | 7 | CMCSA T VZ TMUS NFLX DIS CHTR | ~22 yrs |
+| International ADRs | 7 | TSM SAP NVO AZN GSK TM HMC SONY BIDU | ~20 yrs |
+| Commodities/ETFs | 2 | GLD SLV | ~19 yrs |
+
+**Sector balance note:** Financials is overrepresented at 32 tickers. Random draws of N=28 will disproportionately include financial names. The 112 tickers with history from 1990 ensure most draws will have aligned windows spanning multiple full market cycles including the 2000 dot-com bust, 2008 financial crisis, 2020 COVID crash, and 2022 bear market.

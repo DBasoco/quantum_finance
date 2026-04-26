@@ -1,6 +1,6 @@
 # Quantum CVaR Portfolio Optimization
 
-A quantum-classical hybrid portfolio optimization framework using the Quantum Approximate Optimization Algorithm (QAOA) with Conditional Value at Risk (CVaR) as the risk measure. The system selects optimal asset subsets from a market universe stored in SQLite, optimises portfolio weights using a classical LP solver, and benchmarks the quantum result against classical CVaR-optimal portfolios.
+A quantum-classical hybrid portfolio optimization framework using the Quantum Approximate Optimization Algorithm (QAOA) with Conditional Value at Risk (CVaR) as the risk measure. The system selects optimal asset subsets from a market universe stored in SQLite, optimizes portfolio weights using a classical LP solver, and benchmarks the quantum result against classical CVaR-optimal portfolios.
 
 ---
 
@@ -132,7 +132,7 @@ main.py [--db PATH] [--mode {hybrid,full}]
 | `--weight-floor` | Min weight per asset as multiple of equal weight `1/k` | 0.5 |
 | `--weight-cap` | Max weight per asset as multiple of equal weight `1/k` | 2.0 |
 | `--warm-start` | Path to `.npy` file with initial QAOA parameters | None |
-| `--save-params` | Save optimised parameters to `.npy` file | None |
+| `--save-params` | Save optimized parameters to `.npy` file | None |
 | `--seed` | Random seed for asset selection and QAOA RNG | 42 |
 | `--scenario` | Scenario construction method (see below) | `block_bootstrap` |
 | `--top-k-outcomes` | Number of measured outcomes to print | 10 |
@@ -157,7 +157,7 @@ Block bootstrap with `--block-len 5` (one trading week) is recommended because C
 - Return gap: classical benchmark return minus quantum return (negative = quantum won)
 
 **Weight diversification:**
-By default the LP enforces a floor of `0.5/k` and a cap of `2.0/k` per selected asset. This prevents the LP from concentrating the entire portfolio into 1-3 assets while still allowing meaningful active weighting. Both parameters are multiples of the equal-weight allocation `1/k`. Set `--weight-floor 0.0 --weight-cap 1.0` to disable diversification and use strict equal weighting, or set `--weight-floor 0.0 --weight-cap 1.0` to allow unconstrained LP optimization.
+By default the LP enforces a floor of `0.00005/k` and a cap of `10.0/k` per selected asset. This prevents the LP from concentrating the entire portfolio into 1-3 assets while still allowing meaningful active weighting. Both parameters are multiples of the equal-weight allocation `1/k`. Set `--weight-floor 0.0 --weight-cap 1.0` to disable diversification and use strict equal weighting, or set `--weight-floor 0.0 --weight-cap 1.0` to allow unconstrained LP optimization.
 
 ---
 
@@ -332,24 +332,6 @@ After ingesting, verify the database:
 python3 data_prep.py --db ../data/market.db --inspect
 ```
 
-Check for short-history tickers that will truncate aligned windows:
-
-```bash
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('../data/market.db')
-rows = conn.execute(
-    'SELECT ticker, COUNT(*) as n, MIN(date) as first '
-    'FROM returns GROUP BY ticker '
-    'ORDER BY n ASC LIMIT 20'
-).fetchall()
-for r in rows:
-    flag = '  <-- REVIEW' if r[1] < 4000 else ''
-    print(f'{r[0]:8s}  {r[1]:5d} rows  from {r[2]}{flag}')
-conn.close()
-"
-```
-
 To remove a problem ticker:
 
 ```bash
@@ -427,10 +409,10 @@ python3 sweep.py \
 ## Understanding the Output
 
 ### Expected return
-Reported as daily percentage (`daily log-return × 100`). A value of `0.33%` represents the mean daily return across the sampled scenarios. This is an **in-sample** estimate computed on the same scenario sample used to optimise the circuit and fit the LP weights.
+Reported as daily percentage (`daily log-return × 100`). A value of `0.33%` represents the mean daily return across the sampled scenarios. This is an **in-sample** estimate computed on the same scenario sample used to optimize the circuit and fit the LP weights.
 
 ### Empirical CVaR
-The average daily loss in the worst `(1 - alpha)` fraction of scenarios. With `alpha=0.99` and `S=100`, this is the average loss across the single worst scenario. Reported as a daily percentage. The CVaR budget `C=0.03` means the optimiser targets a maximum 3% daily tail loss.
+The average daily loss in the worst `(1 - alpha)` fraction of scenarios. With `alpha=0.99` and `S=100`, this is the average loss across the single worst scenario. Reported as a daily percentage. The CVaR budget `C=0.03` means the optimizer targets a maximum 3% daily tail loss.
 
 ### Exact-k fraction
 The proportion of QAOA evaluation shots that measured a bitstring with exactly `k` assets selected. Higher is better. Values below 10% indicate the circuit is struggling to enforce the cardinality constraint — increase `--lambda-K` or `--p`.

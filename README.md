@@ -198,7 +198,7 @@ sweep.py [--db PATH] [--params-dir PATH]
 | `--params-dir` | Directory for warm-start `.npy` files | `../data/params` |
 | `--output-csv` | CSV output path | `../data/sweep_results.csv` |
 | `--output-plot-dir` | Directory for output plots | `../data/plots` |
-| `--N` | Number of assets per run | 28 |
+| `--N` | Number of assets per run | 20 |
 | `--p` | QAOA circuit depth | 2 |
 | `--k-min` | Minimum cardinality to sweep | 3 |
 | `--k-max` | Maximum cardinality to sweep (-1 = N) | -1 |
@@ -424,54 +424,6 @@ python3 sweep.py \
     --plot
 ```
 
-### HPC cluster (SLURM)
-
-```bash
-#!/bin/bash
-#SBATCH --account=YOUR_ACCOUNT
-#SBATCH --time=2-00:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=246000
-#SBATCH --job-name=rebis_financial
-#SBATCH --output=/home/YOUR_USERNAME/node-%j.out
-#SBATCH --mail-user=your@email.edu
-#SBATCH --mail-type=BEGIN,END,FAIL
-
-. $HOME/.bashrc
-conda activate rebis
-
-cd ./quantum_finance/src/
-export MPLBACKEND=Agg
-
-python3 sweep.py \
-    --db ../data/market.db \
-    --N 28 --p 2 \
-    --k-min 3 --k-max 20 \
-    --seeds 100 --init-seed 420 \
-    --spsa-iters 50 \
-    --shots-train 2048 --shots-eval 8192 \
-    --scenario block_bootstrap --block-len 5 \
-    --output-csv ../data/sweep_results.csv \
-    --output-plot-dir ../data/plots \
-    --plot
-```
-
-Submit with:
-
-```bash
-sbatch quantum_finance.sh
-```
-
-Monitor with:
-
-```bash
-squeue -u YOUR_USERNAME
-tail -f ~/node-JOBID.out
-```
-
----
-
 ## Understanding the Output
 
 ### Expected return
@@ -495,7 +447,7 @@ Shows the top measured bitstrings from the evaluation shots, ranked by QUBO ener
 
 | Parameter | Effect of increasing |
 |---|---|
-| `--p` | Deeper circuit, better exact-k fraction, longer runtime. Practical limit ~6 for N=28 on simulator; ~1-2 on real IBM hardware |
+| `--p` | Deeper circuit, better exact-k fraction, longer runtime. Practical limit ~6 for N=20 on simulator; ~1-2 on real IBM hardware |
 | `--spsa-iters` | More optimization, diminishing returns after ~100 |
 | `--shots-train` | Lower variance gradient estimates, slower per iteration |
 | `--shots-eval` | Better distribution sampling, more accurate subset selection |
@@ -512,11 +464,11 @@ Shows the top measured bitstrings from the evaluation shots, ranked by QUBO ener
 
 ## QAOA Circuit Depth and Hardware Feasibility
 
-QAOA performance scales with circuit depth `p`. Each additional layer adds expressibility at the cost of runtime on simulators and fidelity on real hardware.
+QAOA performance scales with circuit depth `p`. Each additional layer adds expressibility at the cost of runtime on simulators and fidelity on real hardware. NOTE: this is only accurate as of April 2026.
 
 **On Aer simulator (ideal, noiseless):**
 
-| p | Approx runtime per run (N=28) | Notes |
+| p | Approx runtime per run (N=20) | Notes |
 |---|---|---|
 | 2 | ~2 min | Current baseline |
 | 4 | ~5 min | Meaningful improvement in exact-k fraction |
@@ -526,16 +478,16 @@ QAOA performance scales with circuit depth `p`. Each additional layer adds expre
 
 **On real IBM quantum hardware:**
 
-Each RZZ gate decomposes to ~2 CNOT gates during transpilation. For N=28 with a dense QUBO, a single layer already produces hundreds of CNOTs. Current IBM hardware CNOT error rates of ~0.5-1% mean circuits with 500+ CNOTs produce outputs dominated by noise rather than signal.
+Each RZZ gate decomposes to ~2 CNOT gates during transpilation. For N=20 with a dense QUBO, a single layer already produces hundreds of CNOTs. Current IBM hardware CNOT error rates of ~0.5-1% mean circuits with 500+ CNOTs produce outputs dominated by noise rather than signal.
 
 | p | Max practical N | Notes |
 |---|---|---|
 | 1 | ~10 | Clean results with error mitigation |
 | 1 | ~20 | Marginal; error mitigation required |
 | 2 | ~10 | Needs error mitigation |
-| 2+ | 28 | Not feasible on current hardware |
+| 2+ | 20 | Not feasible on current hardware |
 
-The Aer simulation results represent what QAOA *would* achieve on ideal hardware and establish a theoretical benchmark. N=8-12 at p=1-2 represents the current hardware-feasible regime. N=28 at p=2-6 is a near-term target as hardware noise rates improve.
+The Aer simulation results represent what QAOA *would* achieve on ideal hardware and establish a theoretical benchmark. N=8-12 at p=1-2 represents the current hardware-feasible regime. N=20 at p=2-6 is a near-term target as hardware noise rates improve.
 
 ---
 
@@ -570,4 +522,4 @@ The 222-ticker universe spans 13 sectors with history primarily from 1990 to 202
 | International ADRs | 7 | TSM SAP NVO AZN GSK TM HMC SONY BIDU | ~20 yrs |
 | Commodities/ETFs | 2 | GLD SLV | ~19 yrs |
 
-**Sector balance note:** Financials is overrepresented at 32 tickers. Random draws of N=28 will disproportionately include financial names. The 112 tickers with history from 1990 ensure most draws will have aligned windows spanning multiple full market cycles including the 2000 dot-com bust, 2008 financial crisis, 2020 COVID crash, and 2022 bear market.
+**Sector balance note:** Financials is overrepresented at 32 tickers. Random draws of N=20 will disproportionately include financial names. The 112 tickers with history from 1990 ensure most draws will have aligned windows spanning multiple full market cycles including the 2000 dot-com bust, 2008 financial crisis, 2020 COVID crash, and 2022 bear market.

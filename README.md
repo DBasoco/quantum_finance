@@ -214,7 +214,7 @@ sweep.py [--db PATH] [--params-dir PATH]
 
 ## Reproducing the Database
 
-The following commands recreate the full 222-ticker universe. Run from the `src/` directory. The full download takes approximately 20-30 minutes depending on network speed and Yahoo Finance throttling.
+The following commands recreate the full 222-ticker universe. Run from the `src/` directory. The full download takes a few minutes depending on network speed and Yahoo Finance throttling.
 
 **Important:** Several tickers in the universe have shorter histories that will truncate the aligned date window when randomly drawn alongside long-history tickers. The table at the end of this section lists the tickers to watch. After ingesting, verify row counts and remove any ticker with fewer than 4000 return rows before running sweeps.
 
